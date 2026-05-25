@@ -3,6 +3,7 @@ const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
+const crypto = require("crypto");
 const { google } = require("googleapis");
 require("dotenv").config();
 
@@ -15,6 +16,11 @@ const oauthClientPath = process.env.GOOGLE_OAUTH_CLIENT_PATH;
 const oauthTokenPath = process.env.GOOGLE_OAUTH_TOKEN_PATH || path.join(__dirname, "oauth-token.json");
 const oauthClientJson = process.env.GOOGLE_OAUTH_CLIENT_JSON;
 const oauthTokenJson = process.env.GOOGLE_OAUTH_TOKEN_JSON;
+const licenseKeys = (process.env.TYPEVAULT_LICENSE_KEYS || "")
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
+const sessionSecret = process.env.TYPEVAULT_SESSION_SECRET || apiKey || "typevault-dev-session-secret";
 
 if (!rootFolderId) {
   throw new Error("GOOGLE_DRIVE_FOLDER_ID is required.");
@@ -48,6 +54,17 @@ function readJsonFile(filePath) {
 function requireApiKey(req, res, next) {
   if (!apiKey) return next();
   const provided = req.header("x-typevault-key") || req.query.key;
+  if (provided === apiKey) {
+    req.auth = { type: "admin" };
+    return next();
+  }
+
+  const session = verifySessionToken(req.header("authorization"));
+  if (session) {
+    req.auth = { type: "session", userId: session.userId, email: session.email };
+    return next();
+  }
+
   if (provided !== apiKey) {
     return res.status(401).json({ ok: false, error: "Invalid TypeVault API key." });
   }
@@ -59,6 +76,59 @@ function safeName(value) {
     .replace(/[\\/:*?"<>|]/g, "_")
     .replace(/\s+/g, "_")
     .replace(/^_+|_+$/g, "") || "default";
+}
+
+function base64Url(input) {
+  return Buffer.from(input).toString("base64url");
+}
+
+function sign(value) {
+  return crypto.createHmac("sha256", sessionSecret).update(value).digest("base64url");
+}
+
+function createSessionToken(email) {
+  const payload = {
+    email,
+    userId: safeName(email),
+    exp: Date.now() + 1000 * 60 * 60 * 24 * 30
+  };
+  const encoded = base64Url(JSON.stringify(payload));
+  return `${encoded}.${sign(encoded)}`;
+}
+
+function verifySessionToken(header) {
+  if (!header || !header.toLowerCase().startsWith("bearer ")) return null;
+  const token = header.slice(7).trim();
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  if (sign(parts[0]) !== parts[1]) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
+    if (!payload.exp || payload.exp < Date.now()) return null;
+    return payload;
+  } catch (error) {
+    return null;
+  }
+}
+
+function licenseAllowed(email, licenseKey) {
+  if (!licenseKeys.length) return false;
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const normalizedKey = String(licenseKey || "").trim();
+  return licenseKeys.some((entry) => {
+    const parts = entry.split(":");
+    if (parts.length === 2) {
+      return parts[0].trim().toLowerCase() === normalizedEmail && parts[1].trim() === normalizedKey;
+    }
+    return entry === normalizedKey;
+  });
+}
+
+function requireMatchingUser(req, res, next) {
+  if (req.auth && req.auth.type === "session" && safeName(req.params.userId) !== req.auth.userId) {
+    return res.status(403).json({ ok: false, error: "This session cannot access another user's files." });
+  }
+  next();
 }
 
 async function driveClient() {
@@ -168,6 +238,23 @@ app.get("/health", async (req, res) => {
   });
 });
 
+app.post("/auth/license", (req, res) => {
+  const email = String(req.body.email || "").trim().toLowerCase();
+  const licenseKey = String(req.body.licenseKey || "").trim();
+  if (!email || !licenseKey) {
+    return res.status(400).json({ ok: false, error: "Email and license key are required." });
+  }
+  if (!licenseAllowed(email, licenseKey)) {
+    return res.status(401).json({ ok: false, error: "Invalid license key." });
+  }
+  res.json({
+    ok: true,
+    token: createSessionToken(email),
+    userId: safeName(email),
+    email
+  });
+});
+
 app.get("/auth/google", requireApiKey, (req, res) => {
   try {
     const oauth2Client = oauthClientForSetup();
@@ -208,7 +295,7 @@ app.get("/drive/check", requireApiKey, async (req, res) => {
   }
 });
 
-app.post("/users/:userId/upload", requireApiKey, upload.single("file"), async (req, res) => {
+app.post("/users/:userId/upload", requireApiKey, requireMatchingUser, upload.single("file"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ ok: false, error: "Upload field 'file' is required." });
   }
@@ -243,7 +330,7 @@ app.post("/users/:userId/upload", requireApiKey, upload.single("file"), async (r
   }
 });
 
-app.get("/users/:userId/files", requireApiKey, async (req, res) => {
+app.get("/users/:userId/files", requireApiKey, requireMatchingUser, async (req, res) => {
   try {
     const drive = await driveClient();
     const userFolderId = await ensureUserFolder(drive, safeName(req.params.userId));
