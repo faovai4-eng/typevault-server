@@ -20,8 +20,8 @@ if (!rootFolderId) {
   throw new Error("GOOGLE_DRIVE_FOLDER_ID is required.");
 }
 
-if (!credentialsPath) {
-  throw new Error("GOOGLE_APPLICATION_CREDENTIALS is required.");
+if (!credentialsPath && !(oauthClientJson && oauthTokenJson)) {
+  throw new Error("Either GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_OAUTH_CLIENT_JSON + GOOGLE_OAUTH_TOKEN_JSON is required.");
 }
 
 const uploadDir = path.join(__dirname, "uploads");
