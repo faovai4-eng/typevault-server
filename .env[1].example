@@ -1,0 +1,8 @@
+PORT=8787
+GOOGLE_APPLICATION_CREDENTIALS=C:\Users\JM\Documents\Downloads\typevault-cloud-e19570f7555a.json
+GOOGLE_OAUTH_CLIENT_PATH=C:\Users\JM\Desktop\typevault-server\oauth-client.json
+GOOGLE_OAUTH_TOKEN_PATH=C:\Users\JM\Desktop\typevault-server\oauth-token.json
+GOOGLE_OAUTH_CLIENT_JSON=
+GOOGLE_OAUTH_TOKEN_JSON=
+GOOGLE_DRIVE_FOLDER_ID=1Mk7GbQ5CkMz_u81nuUr2NJBZkkHo7Waj
+TYPEVAULT_API_KEY=change-this-secret-key
